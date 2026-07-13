@@ -30,6 +30,24 @@ brevoClient.authentications["api-key"].apiKey = process.env.BREVO_API_KEY;
 const brevoEmailApi = new SibApiV3Sdk.TransactionalEmailsApi();
 const MAIL_FROM = process.env.EMAIL_FROM || "chyto.tech.sup@gmail.com";
 
+function emailTemplate(heading, bodyHtml) {
+  return `
+  <div style="background:#f4f4f5;padding:32px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+    <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+      <div style="background:#0f0f0f;padding:24px 28px;">
+        <span style="color:#ffffff;font-size:20px;font-weight:800;letter-spacing:0.5px;">Chyto</span>
+      </div>
+      <div style="padding:28px;">
+        <h2 style="margin:0 0 16px;font-size:19px;color:#0f0f0f;">${heading}</h2>
+        <div style="font-size:14px;line-height:1.6;color:#333;">${bodyHtml}</div>
+      </div>
+      <div style="padding:16px 28px;background:#fafafa;border-top:1px solid #eee;">
+        <p style="margin:0;font-size:11px;color:#999;">This is an automated message from Chyto. Please don't reply directly to this email.</p>
+      </div>
+    </div>
+  </div>`;
+}
+
 async function sendMail(to, subject, html) {
   try {
     await brevoEmailApi.sendTransacEmail({
@@ -266,9 +284,14 @@ app.post("/security/request-code", verifyFirebaseToken, async (req, res) => {
     await sendMail(
       currentEmail,
       "Your Chyto verification code",
-      `<p>Your verification code to change your ${label} is:</p>
-       <h2 style="letter-spacing:2px;">${code}</h2>
-       <p>This code expires in 1 minute. If you didn't request this, please secure your account.</p>`
+      emailTemplate(
+        "Verify it's you \u{1F510}",
+        `<p>Someone (hopefully you!) asked to change the ${label} on your Chyto account. Here's your one-time code:</p>
+         <div style="text-align:center;margin:28px 0;">
+           <span style="display:inline-block;background:#0f0f0f;color:#fff;font-size:28px;letter-spacing:6px;font-weight:700;padding:14px 24px;border-radius:10px;">${code}</span>
+         </div>
+         <p>This code expires in 1 minute. If you didn't request this, no action is needed \u2014 but you may want to secure your account.</p>`
+      )
     );
 
     return res.json({ success: true });
@@ -331,9 +354,12 @@ app.post("/security/verify-code", verifyFirebaseToken, async (req, res) => {
         await sendMail(
           currentEmail,
           "Security alert on your Chyto account",
-          `<p>There have been multiple failed attempts to change your ${label}.</p>
-           <p>Access to this action has been temporarily locked for ${formatWait(lockMs)}.</p>
-           <p>If this wasn't you, please secure your account immediately.</p>`
+          emailTemplate(
+            "Security alert \u{1F6A8}",
+            `<p>There have been multiple failed attempts to change your ${label} on your Chyto account.</p>
+             <p>To protect you, this action has been temporarily locked for <strong>${formatWait(lockMs)}</strong>.</p>
+             <p>If this wasn't you, please secure your account immediately.</p>`
+          )
         );
 
         if (update.redFlagged) {
@@ -350,6 +376,30 @@ app.post("/security/verify-code", verifyFirebaseToken, async (req, res) => {
     if (type === "email") {
       await admin.auth().updateUser(userId, { email: challenge.newValue });
       await userRef.set({ email: challenge.newValue }, { merge: true });
+
+      const displayName = (userDoc.data()?.legalName) || (userDoc.data()?.preferredName) || "there";
+
+      await sendMail(
+        currentEmail,
+        "Your Chyto email address was changed",
+        emailTemplate(
+          "Email address updated \u2705",
+          `<p>Hey ${displayName},</p>
+           <p>The email on your Chyto account was just changed from this address to <strong>${challenge.newValue}</strong>.</p>
+           <p>If you made this change, no action is needed. If you didn't, please contact support immediately \u2014 your account may be compromised.</p>`
+        )
+      );
+
+      await sendMail(
+        challenge.newValue,
+        "This is now your Chyto account email",
+        emailTemplate(
+          "You're all set \u2705",
+          `<p>Hey ${displayName},</p>
+           <p><strong>${challenge.newValue}</strong> is now the email address for your Chyto account.</p>
+           <p>If this wasn't you, please contact support immediately.</p>`
+        )
+      );
     } else {
       await admin.auth().updateUser(userId, { password: challenge.newValue });
     }
