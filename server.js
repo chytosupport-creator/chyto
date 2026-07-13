@@ -21,6 +21,8 @@ admin.initializeApp({
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 // --- Mailer ---
+const dns = require("dns");
+
 const mailer = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
   port: Number(process.env.EMAIL_PORT || 587),
@@ -32,6 +34,9 @@ const mailer = nodemailer.createTransport({
   connectionTimeout: 10000,
   greetingTimeout: 10000,
   socketTimeout: 10000,
+  // Render's outbound network can't route IPv6 to most SMTP hosts, causing
+  // ENETUNREACH. Force IPv4 resolution so connections actually go through.
+  lookup: (hostname, options, callback) => dns.lookup(hostname, { family: 4 }, callback),
 });
 const MAIL_FROM = process.env.EMAIL_FROM || process.env.EMAIL_USER;
 
