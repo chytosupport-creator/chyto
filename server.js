@@ -4,6 +4,7 @@ const admin = require("firebase-admin");
 const Stripe = require("stripe");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
+const geoip = require("geoip-lite");
 
 const app = express();
 app.use(cors());
@@ -33,8 +34,10 @@ const MAIL_FROM = process.env.EMAIL_FROM || process.env.EMAIL_USER;
 async function sendMail(to, subject, html) {
   try {
     await mailer.sendMail({ from: MAIL_FROM, to, subject, html });
+    return { success: true };
   } catch (err) {
-    console.error("sendMail error:", err.message);
+    console.error("sendMail error:", err.message, err.code || "");
+    return { success: false, error: err.message };
   }
 }
 
@@ -123,6 +126,34 @@ app.post("/fraud/claim", verifyFirebaseToken, async (req, res) => {
   } catch (err) {
     console.error("fraud/claim error:", err);
     return res.status(500).json({ error: "Could not finalize registration." });
+  }
+});
+
+// Called right after a device session is recorded - looks up the caller's
+// IP (offline, via geoip-lite) and merges country/region/city/ip into that
+// device's entry so LoggedInDevicesScreen can show it.
+app.post("/device/geo", verifyFirebaseToken, async (req, res) => {
+  const { deviceId } = req.body;
+  const userId = req.userId;
+  if (!deviceId) return res.status(400).json({ error: "Missing deviceId" });
+
+  try {
+    const ip = getClientIp(req);
+    const geo = geoip.lookup(ip) || {};
+    const update = {
+      [`devices.${deviceId}.ip`]: ip,
+      [`devices.${deviceId}.country`]: geo.country || "Unknown",
+      [`devices.${deviceId}.region`]: geo.region || "Unknown",
+      [`devices.${deviceId}.city`]: geo.city || "Unknown",
+    };
+
+    const db = admin.firestore();
+    await db.collection("users").doc(userId).update(update);
+
+    return res.json({ success: true, ip, ...geo });
+  } catch (err) {
+    console.error("device/geo error:", err);
+    return res.status(500).json({ error: "Could not resolve device location." });
   }
 });
 
@@ -328,6 +359,34 @@ app.post("/security/verify-code", verifyFirebaseToken, async (req, res) => {
 });
 
 // =====================================================================
+// Contact Us ticket -> emails chyto.support@gmail.com
+// =====================================================================
+
+app.post("/contact-us", verifyFirebaseToken, async (req, res) => {
+  const { subject, body, userEmail } = req.body;
+  if (!subject || !body) {
+    return res.status(400).json({ error: "Subject and description are required." });
+  }
+
+  const referenceId = "CHY-" + Math.floor(100000 + Math.random() * 900000);
+
+  const result = await sendMail(
+    "chyto.support@gmail.com",
+    `[Chyto Support Ticket ${referenceId}] ${subject}`,
+    `<p><strong>From:</strong> ${userEmail || "unknown"}</p>
+     <p><strong>Reference ID:</strong> ${referenceId}</p>
+     <p><strong>Subject:</strong> ${subject}</p>
+     <p><strong>Description:</strong></p>
+     <p>${String(body).replace(/</g, "&lt;")}</p>`
+  );
+
+  if (!result.success) {
+    return res.status(502).json({ error: "Failed to submit ticket: " + result.error });
+  }
+  return res.json({ success: true, referenceId });
+});
+
+// =====================================================================
 // Welcome email
 // =====================================================================
 
@@ -342,7 +401,7 @@ app.post("/send-welcome-email", verifyFirebaseToken, async (req, res) => {
 
     const greetingName = name || "there";
 
-    await sendMail(
+    const result = await sendMail(
       email,
       "Welcome to Chyto!",
       `<p>Hi ${greetingName},</p>
@@ -359,10 +418,13 @@ app.post("/send-welcome-email", verifyFirebaseToken, async (req, res) => {
        <p>Glad you're here — enjoy exploring.</p>`
     );
 
+    if (!result.success) {
+      return res.status(502).json({ error: "SMTP send failed: " + result.error });
+    }
     return res.json({ success: true });
   } catch (err) {
     console.error("send-welcome-email error:", err);
-    return res.status(500).json({ error: "Failed to send welcome email." });
+    return res.status(500).json({ error: "Failed to send welcome email: " + err.message });
   }
 });
 
@@ -423,4 +485,7 @@ app.post("/link-collateral-card", verifyFirebaseToken, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+["EMAIL_HOST", "EMAIL_USER", "EMAIL_PASS"].forEach((k) => {
+  if (!process.env[k]) console.warn(`WARNING: env var ${k} is not set - outgoing email will fail.`);
+});
 app.listen(PORT, () => console.log(`Chyto backend listening on port ${PORT}`));
