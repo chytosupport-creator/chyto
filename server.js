@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const Stripe = require("stripe");
-const { Resend } = require("resend");
+const SibApiV3Sdk = require("sib-api-v3-sdk");
 const crypto = require("crypto");
 const geoip = require("geoip-lite");
 
@@ -22,22 +22,27 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 // --- Mailer ---
 // Render's free tier blocks outbound SMTP ports entirely, so nodemailer
-// can never connect regardless of host/IPv4/IPv6 config. Resend uses a
-// plain HTTPS API instead, which isn't blocked.
-const resend = new Resend(process.env.RESEND_API_KEY);
-const MAIL_FROM = process.env.EMAIL_FROM || "onboarding@resend.dev";
+// can never connect regardless of host/IPv4/IPv6 config. Brevo uses a
+// plain HTTPS API instead, which isn't blocked, and lets us send from our
+// own verified Gmail sender address without needing a custom domain.
+const brevoClient = SibApiV3Sdk.ApiClient.instance;
+brevoClient.authentications["api-key"].apiKey = process.env.BREVO_API_KEY;
+const brevoEmailApi = new SibApiV3Sdk.TransactionalEmailsApi();
+const MAIL_FROM = process.env.EMAIL_FROM || "chyto.tech.sup@gmail.com";
 
 async function sendMail(to, subject, html) {
   try {
-    const result = await resend.emails.send({ from: MAIL_FROM, to, subject, html });
-    if (result.error) {
-      console.error("sendMail error:", result.error.message || result.error);
-      return { success: false, error: result.error.message || "Send failed" };
-    }
+    await brevoEmailApi.sendTransacEmail({
+      sender: { email: MAIL_FROM, name: "Chyto" },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+    });
     return { success: true };
   } catch (err) {
-    console.error("sendMail error:", err.message);
-    return { success: false, error: err.message };
+    const msg = err.response?.body?.message || err.message;
+    console.error("sendMail error:", msg);
+    return { success: false, error: msg };
   }
 }
 
