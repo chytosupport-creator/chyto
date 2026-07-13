@@ -58,6 +58,96 @@ app.get("/", (req, res) => {
 });
 
 // =====================================================================
+// Fraud prevention: one account per device / phone, IP rate-limiting
+// =====================================================================
+
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (forwarded) return forwarded.split(",")[0].trim();
+  return req.socket.remoteAddress || "unknown";
+}
+
+// Called BEFORE Firebase account creation - no auth yet.
+app.post("/fraud/precheck", async (req, res) => {
+  const { deviceId } = req.body;
+  if (!deviceId) return res.status(400).json({ error: "Missing deviceId" });
+
+  try {
+    const db = admin.firestore();
+    const ip = getClientIp(req);
+
+    const deviceDoc = await db.collection("device_registry").doc(deviceId).get();
+    if (deviceDoc.exists) {
+      return res.status(409).json({ error: "An account already exists on this device." });
+    }
+
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    const ipLogs = await db.collection("ip_log")
+      .where("ip", "==", ip)
+      .where("timestamp", ">", since)
+      .get();
+    if (ipLogs.size >= 3) {
+      return res.status(429).json({ error: "Too many accounts created from this network recently. Please try again later." });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("fraud/precheck error:", err);
+    return res.status(500).json({ error: "Could not verify registration eligibility." });
+  }
+});
+
+// Called AFTER Firebase account creation - claims the device/phone/IP for this uid.
+app.post("/fraud/claim", verifyFirebaseToken, async (req, res) => {
+  const { deviceId, phone } = req.body;
+  const userId = req.userId;
+  if (!deviceId) return res.status(400).json({ error: "Missing deviceId" });
+
+  try {
+    const db = admin.firestore();
+    const ip = getClientIp(req);
+
+    if (phone) {
+      const phoneRef = db.collection("phone_registry").doc(phone);
+      const phoneDoc = await phoneRef.get();
+      if (phoneDoc.exists && phoneDoc.data().uid !== userId) {
+        return res.status(409).json({ error: "This phone number is already linked to another account." });
+      }
+      await phoneRef.set({ uid: userId, claimedAt: Date.now() });
+    }
+
+    await db.collection("device_registry").doc(deviceId).set({ uid: userId, claimedAt: Date.now() });
+    await db.collection("ip_log").add({ ip, uid: userId, timestamp: Date.now() });
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("fraud/claim error:", err);
+    return res.status(500).json({ error: "Could not finalize registration." });
+  }
+});
+
+// Called whenever a phone number is added/changed post-registration.
+app.post("/fraud/check-phone", verifyFirebaseToken, async (req, res) => {
+  const { phone } = req.body;
+  const userId = req.userId;
+  if (!phone) return res.status(400).json({ error: "Missing phone" });
+
+  try {
+    const db = admin.firestore();
+    const phoneRef = db.collection("phone_registry").doc(phone);
+    const phoneDoc = await phoneRef.get();
+    if (phoneDoc.exists && phoneDoc.data().uid !== userId) {
+      return res.status(409).json({ error: "This phone number is already linked to another account." });
+    }
+    await phoneRef.set({ uid: userId, claimedAt: Date.now() });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("fraud/check-phone error:", err);
+    return res.status(500).json({ error: "Could not verify phone number." });
+  }
+});
+
+// =====================================================================
 // Security code flow (email change / password change)
 // =====================================================================
 
