@@ -107,12 +107,14 @@ app.post("/fraud/precheck", async (req, res) => {
       return res.status(409).json({ error: "An account already exists on this device." });
     }
 
+    // A composite where+where query needs a Firestore index that was never
+    // created, so this threw on every call and surfaced as "Could not verify
+    // registration eligibility." Query by ip only (single-field, no index
+    // needed) and filter the time window in code instead.
     const since = Date.now() - 24 * 60 * 60 * 1000;
-    const ipLogs = await db.collection("ip_log")
-      .where("ip", "==", ip)
-      .where("timestamp", ">", since)
-      .get();
-    if (ipLogs.size >= 3) {
+    const ipLogsSnap = await db.collection("ip_log").where("ip", "==", ip).get();
+    const recentCount = ipLogsSnap.docs.filter(d => (d.data().timestamp || 0) > since).length;
+    if (recentCount >= 3) {
       return res.status(429).json({ error: "Too many accounts created from this network recently. Please try again later." });
     }
 
@@ -264,6 +266,16 @@ app.post("/security/request-code", verifyFirebaseToken, async (req, res) => {
       });
     }
 
+    // Cooldown between (re)send requests so the resend button can't be
+    // spammed for a fresh code every second.
+    const RESEND_COOLDOWN_MS = 30 * 1000;
+    if (existing.lastSentAt && now - existing.lastSentAt < RESEND_COOLDOWN_MS) {
+      const waitMs = RESEND_COOLDOWN_MS - (now - existing.lastSentAt);
+      return res.status(429).json({
+        error: `Please wait ${formatWait(waitMs)} before requesting another code.`,
+      });
+    }
+
     const code = generateCode();
     const challenge = {
       code,
@@ -273,6 +285,7 @@ app.post("/security/request-code", verifyFirebaseToken, async (req, res) => {
       stageIndex: existing.stageIndex ?? -1,
       lockUntil: existing.lockUntil || 0,
       redFlagged: existing.redFlagged || false,
+      lastSentAt: now,
     };
 
     await userRef.update({ [`security.${type}`]: challenge });
