@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const Stripe = require("stripe");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const crypto = require("crypto");
 const geoip = require("geoip-lite");
 
@@ -21,31 +21,22 @@ admin.initializeApp({
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 // --- Mailer ---
-const dns = require("dns");
-
-const mailer = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST,
-  port: Number(process.env.EMAIL_PORT || 587),
-  secure: process.env.EMAIL_SECURE === "true",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 10000,
-  // Render's outbound network can't route IPv6 to most SMTP hosts, causing
-  // ENETUNREACH. Force IPv4 resolution so connections actually go through.
-  lookup: (hostname, options, callback) => dns.lookup(hostname, { family: 4 }, callback),
-});
-const MAIL_FROM = process.env.EMAIL_FROM || process.env.EMAIL_USER;
+// Render's free tier blocks outbound SMTP ports entirely, so nodemailer
+// can never connect regardless of host/IPv4/IPv6 config. Resend uses a
+// plain HTTPS API instead, which isn't blocked.
+const resend = new Resend(process.env.RESEND_API_KEY);
+const MAIL_FROM = process.env.EMAIL_FROM || "onboarding@resend.dev";
 
 async function sendMail(to, subject, html) {
   try {
-    await mailer.sendMail({ from: MAIL_FROM, to, subject, html });
+    const result = await resend.emails.send({ from: MAIL_FROM, to, subject, html });
+    if (result.error) {
+      console.error("sendMail error:", result.error.message || result.error);
+      return { success: false, error: result.error.message || "Send failed" };
+    }
     return { success: true };
   } catch (err) {
-    console.error("sendMail error:", err.message, err.code || "");
+    console.error("sendMail error:", err.message);
     return { success: false, error: err.message };
   }
 }
