@@ -387,7 +387,14 @@ app.post("/security/verify-code", verifyFirebaseToken, async (req, res) => {
 
     // Code matched — apply the change
     if (type === "email") {
-      await admin.auth().updateUser(userId, { email: challenge.newValue });
+      try {
+        await admin.auth().updateUser(userId, { email: challenge.newValue });
+      } catch (err) {
+        // A duplicate/double-submitted request can land here after the first
+        // one already applied the same change - treat that as success rather
+        // than surfacing a confusing error.
+        if (err.code !== "auth/email-already-exists") throw err;
+      }
       await userRef.set({ email: challenge.newValue }, { merge: true });
 
       const displayName = (userDoc.data()?.legalName) || (userDoc.data()?.preferredName) || "there";
