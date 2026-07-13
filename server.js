@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const geoip = require("geoip-lite");
 
 const app = express();
+app.set("trust proxy", true);
 app.use(cors());
 app.use(express.json());
 
@@ -28,6 +29,9 @@ const mailer = nodemailer.createTransport({
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
 });
 const MAIL_FROM = process.env.EMAIL_FROM || process.env.EMAIL_USER;
 
