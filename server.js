@@ -9,7 +9,7 @@ const geoip = require("geoip-lite");
 const app = express();
 app.set("trust proxy", true);
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "25mb" }));
 
 // --- Firebase Admin init ---
 admin.initializeApp({
@@ -48,14 +48,21 @@ function emailTemplate(heading, bodyHtml) {
   </div>`;
 }
 
-async function sendMail(to, subject, html) {
+async function sendMail(to, subject, html, attachments = []) {
   try {
-    await brevoEmailApi.sendTransacEmail({
+    const payload = {
       sender: { email: MAIL_FROM, name: "Chyto" },
       to: [{ email: to }],
       subject,
       htmlContent: html,
-    });
+    };
+    if (attachments.length > 0) {
+      payload.attachment = attachments.map((a) => ({
+        content: a.data,
+        name: a.filename,
+      }));
+    }
+    await brevoEmailApi.sendTransacEmail(payload);
     return { success: true };
   } catch (err) {
     const msg = err.response?.body?.message || err.message;
@@ -107,10 +114,6 @@ app.post("/fraud/precheck", async (req, res) => {
       return res.status(409).json({ error: "An account already exists on this device." });
     }
 
-    // A composite where+where query needs a Firestore index that was never
-    // created, so this threw on every call and surfaced as "Could not verify
-    // registration eligibility." Query by ip only (single-field, no index
-    // needed) and filter the time window in code instead.
     const since = Date.now() - 24 * 60 * 60 * 1000;
     const ipLogsSnap = await db.collection("ip_log").where("ip", "==", ip).get();
     const recentCount = ipLogsSnap.docs.filter(d => (d.data().timestamp || 0) > since).length;
@@ -212,11 +215,11 @@ const CODE_LENGTH = 8;
 const CODE_TTL_MS = 60 * 1000; // 1 minute
 const MAX_FAILS_BEFORE_LOCK = 5;
 const LOCK_STAGES_MS = [
-  2 * 60 * 1000,     // 2 min
-  30 * 60 * 1000,    // 30 min
-  90 * 60 * 1000,    // 1.5 hr
-  180 * 60 * 1000,   // 3 hr
-  360 * 60 * 1000,   // 6 hr
+  2 * 60 * 1000,
+  30 * 60 * 1000,
+  90 * 60 * 1000,
+  180 * 60 * 1000,
+  360 * 60 * 1000,
 ];
 
 function generateCode() {
@@ -266,8 +269,6 @@ app.post("/security/request-code", verifyFirebaseToken, async (req, res) => {
       });
     }
 
-    // Cooldown between (re)send requests so the resend button can't be
-    // spammed for a fresh code every second.
     const RESEND_COOLDOWN_MS = 30 * 1000;
     if (existing.lastSentAt && now - existing.lastSentAt < RESEND_COOLDOWN_MS) {
       const waitMs = RESEND_COOLDOWN_MS - (now - existing.lastSentAt);
@@ -385,14 +386,10 @@ app.post("/security/verify-code", verifyFirebaseToken, async (req, res) => {
       return res.status(400).json({ error: "Code not correct. Please try again." });
     }
 
-    // Code matched — apply the change
     if (type === "email") {
       try {
         await admin.auth().updateUser(userId, { email: challenge.newValue });
       } catch (err) {
-        // A duplicate/double-submitted request can land here after the first
-        // one already applied the same change - treat that as success rather
-        // than surfacing a confusing error.
         if (err.code !== "auth/email-already-exists") throw err;
       }
       await userRef.set({ email: challenge.newValue }, { merge: true });
@@ -438,12 +435,16 @@ app.post("/security/verify-code", verifyFirebaseToken, async (req, res) => {
 // =====================================================================
 
 app.post("/contact-us", verifyFirebaseToken, async (req, res) => {
-  const { subject, body, userEmail } = req.body;
+  const { subject, body, userEmail, attachments } = req.body;
   if (!subject || !body) {
     return res.status(400).json({ error: "Subject and description are required." });
   }
 
   const referenceId = "CHY-" + Math.floor(100000 + Math.random() * 900000);
+
+  const safeAttachments = Array.isArray(attachments)
+    ? attachments.filter((a) => a && a.filename && a.data).slice(0, 5)
+    : [];
 
   const result = await sendMail(
     "chyto.support@gmail.com",
@@ -452,7 +453,9 @@ app.post("/contact-us", verifyFirebaseToken, async (req, res) => {
      <p><strong>Reference ID:</strong> ${referenceId}</p>
      <p><strong>Subject:</strong> ${subject}</p>
      <p><strong>Description:</strong></p>
-     <p>${String(body).replace(/</g, "&lt;")}</p>`
+     <p>${String(body).replace(/</g, "&lt;")}</p>
+     ${safeAttachments.length ? `<p><strong>Attachments:</strong> ${safeAttachments.length} file(s)</p>` : ""}`,
+    safeAttachments
   );
 
   if (!result.success) {
