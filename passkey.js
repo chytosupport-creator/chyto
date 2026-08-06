@@ -210,3 +210,15 @@ router.post("/login-verify", async (req, res) => {
 });
 
 module.exports = router;
+
+router.get("/debug-options", async (req, res) => {
+  const options = await generateRegistrationOptions({
+    rpName: RP_NAME,
+    rpID: RP_ID,
+    userName: "debug@test.com",
+    userID: Buffer.from("debuguser", "utf8"),
+    attestationType: "none",
+    authenticatorSelection: { residentKey: "required", userVerification: "required" },
+  });
+  res.json(options);
+});
