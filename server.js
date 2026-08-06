@@ -10,6 +10,9 @@ const app = express();
 app.set("trust proxy", true);
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
+const passkeyRouter = require("./passkey");
+app.use("/passkey", passkeyRouter);
+
 
 // --- Firebase Admin init ---
 admin.initializeApp({
@@ -559,6 +562,80 @@ app.post("/link-collateral-card", verifyFirebaseToken, async (req, res) => {
   } catch (err) {
     console.error("link-collateral-card error:", err);
     return res.status(500).json({ error: err.message || "Card linking failed" });
+  }
+});
+
+// =====================================================================
+// Inbound email webhook (money/email notifications -> user's inbox)
+// =====================================================================
+
+const INBOUND_WEBHOOK_SECRET = process.env.INBOUND_WEBHOOK_SECRET || "";
+
+function extractAmount(text) {
+  if (!text) return null;
+  const match = String(text).match(/\$\s?([0-9]+(?:\.[0-9]{1,2})?)/);
+  return match ? parseFloat(match[1]) : null;
+}
+
+function firstEmailAddress(raw) {
+  if (!raw) return null;
+  if (Array.isArray(raw)) raw = raw[0];
+  if (typeof raw === "object" && raw.Address) return raw.Address;
+  if (typeof raw === "object" && raw.email) return raw.email;
+  const match = String(raw).match(/[^\s<>]+@[^\s<>]+/);
+  return match ? match[0] : String(raw);
+}
+
+app.post("/inbound-email", async (req, res) => {
+  if (INBOUND_WEBHOOK_SECRET && req.query.secret !== INBOUND_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const items = Array.isArray(req.body) ? req.body : [req.body];
+    const db = admin.firestore();
+
+    for (const item of items) {
+      const toRaw = item.To || item.to || item.envelope?.to || item.RcptTo;
+      const toEmail = firstEmailAddress(toRaw);
+      if (!toEmail || !toEmail.endsWith("@chyto.store")) continue;
+
+      const username = toEmail.split("@")[0].toLowerCase();
+      const fromRaw = item.From || item.from || item.MailFrom;
+      const fromEmail = firstEmailAddress(fromRaw) || "unknown";
+      const subject = item.Subject || item.subject || "";
+      const text = item.RawTextBody || item.text || item.TextBody || item.plain || "";
+      const snippet = String(text).slice(0, 200);
+      const amount = extractAmount(subject) || extractAmount(text);
+
+      const usersSnap = await db.collection("users").where("username", "==", username).limit(1).get();
+      if (usersSnap.empty) {
+        console.warn(`inbound-email: no user found for username=${username}`);
+        continue;
+      }
+      const userDoc = usersSnap.docs[0];
+
+      await db.collection("users").doc(userDoc.id).collection("inbox").add({
+        from: fromEmail,
+        subject,
+        snippet,
+        amount,
+        timestamp: Date.now(),
+        read: false,
+      });
+
+      if (amount) {
+        const userData = userDoc.data();
+        await db.collection("users").doc(userDoc.id).update({
+          balance: (userData.balance || 0) + amount,
+        });
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("inbound-email error:", err);
+    return res.status(500).json({ error: "Failed to process inbound email" });
   }
 });
 

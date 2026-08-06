@@ -9,6 +9,7 @@
     "node": "20.x"
   },
   "dependencies": {
+    "@simplewebauthn/server": "^13.3.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "firebase-admin": "^12.0.0",
