@@ -11,7 +11,7 @@ const router = express.Router();
 
 const RP_ID = "chyto.store";
 const RP_NAME = "Chyto";
-const ORIGIN = ["android:apk-key-hash:85:35:EC:02:47:FC:A7:73:14:B7:C5:07:B3:2F:3C:24:A3:26:FD:31:6D:09:92:45:B6:6E:21:BF:72:A3:E6:6F", "android:apk-key-hash:77:43:36:27:60:FC:76:5C:BF:AE:B7:2E:C1:9F:B1:EF:DE:18:3B:CB:98:3A:57:04:8F:F7:E7:9D:95:C0:7C:F9"];
+const ORIGIN = ["android:apk-key-hash:hTXsAkf8p3MUt8UHsy88JKMm_TFtCZJFtm4hv3Kj5m8", "android:apk-key-hash:d0M2J2D8dly_rrcuwZ-x794YO8uYOlcEj_fnnZXAfPk"];
 const CHALLENGE_TTL_MS = 3 * 60 * 1000;
 
 async function verifyAuth(req, res, next) {
